@@ -15,6 +15,10 @@
 
 
 
+#define _GNU_SOURCE      /* See feature_test_macros(7) */
+#include <sys/syscall.h> /* For SYS_xxx definitions */
+#include <unistd.h>
+
 #include "circular_queue.h"
 
 #include <stdio.h>
@@ -23,9 +27,11 @@
 #include <unistd.h>
 
 typedef struct _CQueue{
-    int m_iBlock;/*  0, 1 */
+    int m_iBlockDeq;/*  0, 1 */
+    int m_iBlockEnq;/*  0, 1 */
     pthread_mutex_t m_stMutex;
-    pthread_cond_t m_stCond;
+    pthread_cond_t m_stCondDeqWait;
+    pthread_cond_t m_stCondEnqWait;
     int m_iElementCount;
     int m_iFront;/* read */
     int m_iRear;/* write */
@@ -48,8 +54,7 @@ static int _ElementInit(Element *_pstElement)
 {
     int iRet = 0;
 
-    if(NULL == _pstElement)
-    {
+    if (NULL == _pstElement) {
         CQLog_Error("invalid _pstElement(%p)", _pstElement);
         iRet = -1;
         goto end;
@@ -57,7 +62,7 @@ static int _ElementInit(Element *_pstElement)
 
     _pstElement->m_pvData = NULL;
     _pstElement->m_iDataLen = 0;
-    
+
 end:
     return iRet;
 }
@@ -71,61 +76,61 @@ static void *_CQInit(CQAttr *_pstCQAttr)
     Element *pstElementTmp = NULL;
     int i = 0;
     int iElementNum = 0;
-    if(NULL == _pstCQAttr)
-    {
+    if (NULL == _pstCQAttr) {
         CQLog_Error("invalid _pstCQAttr(%p)", _pstCQAttr);
         iRet = -1;
         goto end;
     }
     iElementNum = _pstCQAttr->m_iElementCount;
-    
-    if(iElementNum < 3)
-    {
+
+    if (iElementNum < 3) {
         CQLog_Error("invalid iElementNum(%d) < 3", iElementNum);
         iRet = -1;
         goto end;
     }
     pstCQueue = (CQueue *)malloc(sizeof(CQueue));
-    if(NULL == pstCQueue)
-    {
+    if (NULL == pstCQueue) {
         CQLog_Error("call malloc failed for CQueue");
         iRet = -1;
         goto end;
     }
     pstElement = (Element *)malloc(sizeof(Element) * (size_t)iElementNum);
-    if(NULL == pstElement)
-    {
+    if (NULL == pstElement) {
         CQLog_Error("call malloc failed for Element");
         iRet = -1;
         goto end;
     }
     pstElementTmp = pstElement;
-    for(i = 0; i < iElementNum; i++)
-    {
-        if(_ElementInit(pstElementTmp) < 0)
-        {
+    for (i = 0; i < iElementNum; i++) {
+        if (_ElementInit(pstElementTmp) < 0) {
             CQLog_Error("call _ElementInit failed");
             iRet = -1;
             goto end;
         }
         pstElementTmp++;
     }
-    pstCQueue->m_iBlock = _pstCQAttr->m_iMode;
-    if(pthread_mutex_init(&pstCQueue->m_stMutex, NULL) != 0)
-    {
+    pstCQueue->m_iBlockDeq = _pstCQAttr->m_iModeDeq;
+    pstCQueue->m_iBlockEnq = _pstCQAttr->m_iModeEnq;
+    if (pthread_mutex_init(&pstCQueue->m_stMutex, NULL) != 0) {
         CQLog_Error("call malloc failed for CQueue");
         iRet = -1;
         goto end;
     }
-    if(CQ_BLOCK == pstCQueue->m_iBlock)
-    {
-        if(pthread_cond_init(&pstCQueue->m_stCond, NULL) != 0)
-        {
+    if (CQ_BLOCK == pstCQueue->m_iBlockDeq) {
+        if (pthread_cond_init(&pstCQueue->m_stCondDeqWait, NULL) != 0) {
             CQLog_Error("call malloc failed for CQueue");
             iRet = -1;
             goto end;
         }
     }
+    if (CQ_BLOCK == pstCQueue->m_iBlockEnq) {
+        if (pthread_cond_init(&pstCQueue->m_stCondEnqWait, NULL) != 0) {
+            CQLog_Error("call malloc failed for CQueue");
+            iRet = -1;
+            goto end;
+        }
+    }
+
     pstCQueue->m_iElementCount = iElementNum;
     pstCQueue->m_iFront = 0;
     pstCQueue->m_iRear = pstCQueue->m_iFront;
@@ -133,23 +138,20 @@ static void *_CQInit(CQAttr *_pstCQAttr)
     pH = pstCQueue;
     
     CQLog_Debug("successful");
-    
+
 end:
-    if(iRet < 0)
-    {                
-        if(NULL != pstElement)
-        {
+    if (iRet < 0) {
+        if (NULL != pstElement) {
             free(pstElement);
             pstElement = NULL;
         }
-        
-        if(NULL != pstCQueue)
-        {
+
+        if (NULL != pstCQueue) {
             free(pstCQueue);
             pstCQueue = NULL;
         }
     }
-    
+
     return pH;
 }
 
@@ -162,13 +164,13 @@ void *CQInit(CQAttr *_pstCQAttr)
 static int _CQIsFull(CQueue *_pstCQueue)
 {    
     int iRet = 0;
-    if(NULL == _pstCQueue)
-    {
+    if (NULL == _pstCQueue) {
         CQLog_Error("invalid _pstCQueue(%p)", _pstCQueue);
         iRet = -1;
         goto end;
     }
-    iRet = ((_pstCQueue->m_iRear + 1) % _pstCQueue->m_iElementCount) == _pstCQueue->m_iFront;
+    iRet = ((_pstCQueue->m_iRear + 1) % _pstCQueue->m_iElementCount) ==
+           _pstCQueue->m_iFront;
 end:
     return iRet;
 }
@@ -176,14 +178,13 @@ end:
 static int _CQIsEmpty(CQueue *_pstCQueue)
 {    
     int iRet = 0;
-    if(NULL == _pstCQueue)
-    {
+    if (NULL == _pstCQueue) {
         CQLog_Error("invalid _pstCQueue(%p)", _pstCQueue);
         iRet = -1;
         goto end;
     }
     iRet = (_pstCQueue->m_iRear == _pstCQueue->m_iFront);
-    
+
     CQLog_Error("_pstCQueue->m_iRear(%d)", _pstCQueue->m_iRear);
     CQLog_Error("_pstCQueue->m_iFront(%d)", _pstCQueue->m_iFront);
     CQLog_Error("iRet(%d)", iRet);
@@ -196,16 +197,15 @@ static int _CQEnqueue(void *_pCQHandle, Element *_pstElement)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    if(NULL == _pCQHandle && NULL == _pstElement)
-    {
-        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle, _pstElement);
+    if (NULL == _pCQHandle && NULL == _pstElement) {
+        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle,
+                    _pstElement);
         iRet = -1;
         goto end;
     }
     pstCQueue = (CQueue *)_pCQHandle;
 
-    if(1 == _CQIsFull(pstCQueue))
-    {
+    if (1 == _CQIsFull(pstCQueue)) {
         CQLog_Error("CQueuq is full");
         iRet = -1;
         goto end;
@@ -223,31 +223,34 @@ int CQEnqueue(void *_pCQHandle, Element *_pstElement)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle && NULL == _pstElement)
-    {
-        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle, _pstElement);
+
+    if (NULL == _pCQHandle && NULL == _pstElement) {
+        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle,
+                    _pstElement);
         iRet = -1;
         goto end;
     }
     pstCQueue = (CQueue *)_pCQHandle;
-    
-    pthread_mutex_lock(&pstCQueue->m_stMutex);
-    if(_CQEnqueue(_pCQHandle, _pstElement) < 0)
-    {
-        CQLog_Error("call _CQEnqueue failed");
-        pthread_mutex_unlock(&pstCQueue->m_stMutex);
-        iRet = -1;
-        goto end;
 
+    pthread_mutex_lock(&pstCQueue->m_stMutex);
+    if (_CQEnqueue(_pCQHandle, _pstElement) < 0) {
+        if (CQ_BLOCK == pstCQueue->m_iBlockEnq) {
+            while (_CQEnqueue(_pCQHandle, _pstElement) < 0) {
+                pthread_cond_wait(&pstCQueue->m_stCondEnqWait, &pstCQueue->m_stMutex);
+            }
+        } else {
+            CQLog_Error("call _CQDequeue failed");
+            pthread_mutex_unlock(&pstCQueue->m_stMutex);
+            iRet = -1;
+            goto end;
+        }
     }
-    
-    if(CQ_BLOCK == pstCQueue->m_iBlock)
-    {
-        pthread_cond_signal(&pstCQueue->m_stCond);
+
+    if (CQ_BLOCK == pstCQueue->m_iBlockDeq) {
+        pthread_cond_signal(&pstCQueue->m_stCondDeqWait);
     }
     pthread_mutex_unlock(&pstCQueue->m_stMutex);
-    
+
 end:
     return iRet;
 }
@@ -257,17 +260,16 @@ static int _CQDequeue(void *_pCQHandle, Element *_pstElement)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle && NULL == _pstElement)
-    {
-        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle, _pstElement);
+
+    if (NULL == _pCQHandle && NULL == _pstElement) {
+        CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle,
+                    _pstElement);
         iRet = -1;
         goto end;
     }
     pstCQueue = (CQueue *)_pCQHandle;
 
-    if(1 == _CQIsEmpty(pstCQueue))
-    {
+    if (1 == _CQIsEmpty(pstCQueue)) {
         CQLog_Error("CQueuq is empty");
         iRet = -1;
         goto end;
@@ -284,9 +286,8 @@ int CQDequeue(void *_pCQHandle, Element *_pstElement)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle && NULL == _pstElement)
-    {
+
+    if (NULL == _pCQHandle && NULL == _pstElement) {
         CQLog_Error("invalid _pCQHandle(%p) _pstElement(%p)", _pCQHandle, _pstElement);
         iRet = -1;
         goto end;
@@ -294,28 +295,23 @@ int CQDequeue(void *_pCQHandle, Element *_pstElement)
     pstCQueue = (CQueue *)_pCQHandle;
     
     pthread_mutex_lock(&pstCQueue->m_stMutex);
-    if(_CQDequeue(_pCQHandle, _pstElement) < 0)
-    {
-        if(CQ_BLOCK == pstCQueue->m_iBlock)
-        {
-            CQLog_Error("call _CQDequeue failed, cond wait");
-            pthread_cond_wait(&pstCQueue->m_stCond, &pstCQueue->m_stMutex);
-            if(_CQDequeue(_pCQHandle, _pstElement) < 0)
-            {
-                pthread_mutex_unlock(&pstCQueue->m_stMutex);
-                iRet = -1;
-                goto end;
+    if (_CQDequeue(_pCQHandle, _pstElement) < 0) {
+        if (CQ_BLOCK == pstCQueue->m_iBlockDeq) {
+            while (_CQDequeue(_pCQHandle, _pstElement) < 0) {
+                pthread_cond_wait(&pstCQueue->m_stCondDeqWait, &pstCQueue->m_stMutex);
             }
-        }else
-        {
+        } else {
             CQLog_Error("call _CQDequeue failed");
             pthread_mutex_unlock(&pstCQueue->m_stMutex);
             iRet = -1;
             goto end;
         }
     }
+    if (CQ_BLOCK == pstCQueue->m_iBlockEnq) {
+        pthread_cond_signal(&pstCQueue->m_stCondEnqWait);
+    }
     pthread_mutex_unlock(&pstCQueue->m_stMutex);
-    
+
 end:
     return iRet;
 }
@@ -325,14 +321,15 @@ static int _CQGetElementCount(CQueue *_pstCQueue)
 {    
     int iRet = 0;
 
-    if(NULL == _pstCQueue)
-    {
+    if (NULL == _pstCQueue) {
         CQLog_Error("invalid _pstCQueue(%p)", _pstCQueue);
         iRet = -1;
         goto end;
     }
 
-    iRet = (_pstCQueue->m_iElementCount + _pstCQueue->m_iRear - _pstCQueue->m_iFront) % _pstCQueue->m_iElementCount;
+    iRet = (_pstCQueue->m_iElementCount + _pstCQueue->m_iRear -
+            _pstCQueue->m_iFront) %
+           _pstCQueue->m_iElementCount;
 
 end:
     return iRet;
@@ -342,9 +339,8 @@ int CQGetElementCount(void *_pCQHandle)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle)
-    {
+
+    if (NULL == _pCQHandle) {
         CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
         iRet = -1;
         goto end;
@@ -354,37 +350,53 @@ int CQGetElementCount(void *_pCQHandle)
     pthread_mutex_lock(&pstCQueue->m_stMutex);
     iRet = _CQGetElementCount(pstCQueue);
     pthread_mutex_unlock(&pstCQueue->m_stMutex);
-    
+
 end:
     return iRet;
 }
 
-int CQGetMode(void *_pCQHandle)
+int CQGetEnqMode(void *_pCQHandle)
 {
 	int iRet = 0;
 	CQueue *pstCQueue = NULL;
-	
-	if(NULL == _pCQHandle)
-	{
-		CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
-		iRet = -1;
-		goto end;
-	}
-	pstCQueue = (CQueue *)_pCQHandle;
 
-	iRet = pstCQueue->m_iBlock;
-	
+    if (NULL == _pCQHandle) {
+        CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
+        iRet = -1;
+        goto end;
+    }
+    pstCQueue = (CQueue *)_pCQHandle;
+
+    iRet = pstCQueue->m_iBlockEnq;
+
 end:
-	return iRet;
+    return iRet;
+}
+
+int CQGetDeqMode(void *_pCQHandle)
+{
+	int iRet = 0;
+	CQueue *pstCQueue = NULL;
+
+    if (NULL == _pCQHandle) {
+        CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
+        iRet = -1;
+        goto end;
+    }
+    pstCQueue = (CQueue *)_pCQHandle;
+
+    iRet = pstCQueue->m_iBlockDeq;
+
+end:
+    return iRet;
 }
 
 int CQIsFull(void *_pCQHandle)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle)
-    {
+
+    if (NULL == _pCQHandle) {
         CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
         iRet = -1;
         goto end;
@@ -404,9 +416,8 @@ int CQIsEmpty(void *_pCQHandle)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle)
-    {
+
+    if (NULL == _pCQHandle) {
         CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
         iRet = -1;
         goto end;
@@ -425,9 +436,8 @@ static int _CQUninit(void *_pCQHandle)
 {
     int iRet = 0;
     CQueue *pstCQueue = NULL;
-    
-    if(NULL == _pCQHandle)
-    {
+
+    if (NULL == _pCQHandle) {
         CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
         iRet = -1;
         goto end;
@@ -453,21 +463,19 @@ end:
 int CQUninit(void *_pCQHandle)
 {
     int iRet = 0;
-    
-    if(NULL == _pCQHandle)
-    {
+
+    if (NULL == _pCQHandle) {
         CQLog_Error("invalid _pCQHandle(%p)", _pCQHandle);
         iRet = -1;
         goto end;
     }
-    
-    if(_CQUninit(_pCQHandle) < 0)
-    {
+
+    if (_CQUninit(_pCQHandle) < 0) {
         CQLog_Error("call _CQUninit failed");
         iRet = -1;
         goto end;
     }
-    
+
 end:
     return iRet;
 }

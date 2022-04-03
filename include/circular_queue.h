@@ -27,14 +27,16 @@ typedef struct _Element{
 
 typedef struct _CQAttr{
     int m_iElementCount;/*circular queue count*/
-    int m_iMode;/* CQ_NONBLOCK CQ_BLOCK*/
+    int m_iModeDeq;/* CQ_NONBLOCK CQ_BLOCK*/
+    int m_iModeEnq;/* CQ_NONBLOCK CQ_BLOCK*/
 }CQAttr;
 
 void *CQInit(CQAttr *_pstCQAttr);
 int CQEnqueue(void *_pCQHandle, Element *_pstElement);
 int CQDequeue(void *_pCQHandle, Element *_pstElement);
 int CQGetElementCount(void *_pCQHandle);
-int CQGetMode(void *_pCQHandle);
+int CQGetEnqMode(void *_pCQHandle);
+int CQGetDeqMode(void *_pCQHandle);
 int CQIsFull(void *_pCQHandle);
 int CQIsEmpty(void *_pCQHandle);
 int CQUninit(void *_pCQHandle);
