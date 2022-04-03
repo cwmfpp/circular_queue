@@ -14,7 +14,7 @@ CQ_LIBNAME = libcircqueue
 UTILS_LIBNAME = libcircqueue_utils
 CQ_TEST = circular_queue_test
 
-CQ_TEST_SRC = src/circular_queue.c src/test.c
+CQ_TEST_SRC = src/circular_queue.c src/data_service.c src/test.c
 
 LDLIBS = -lm -pthread
 
@@ -47,8 +47,11 @@ else
 endif
 
 # -std=c99 -pedantic
+#CFLAGS += -DMAC_OS
+# set env for mac --> export CFLAGS=-DMAC_OS
 
 R_CFLAGS = -fPIC -Wall -Werror -Wstrict-prototypes -Wwrite-strings -Wshadow -Winit-self -Wcast-align -Wformat=2 -Wmissing-prototypes -Wstrict-overflow=2 -Wcast-qual -Wc++-compat -Wundef -Wswitch-default -Wconversion -Os $(CFLAGS)
+#R_CFLAGS = -fPIC  $(CFLAGS) -g
 
 uname := $(shell sh -c 'uname -s 2>/dev/null || echo false')
 
